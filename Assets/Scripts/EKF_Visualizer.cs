@@ -4,8 +4,9 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
-public class Visualizer : MonoBehaviour
+public class EKF_Visualizer : MonoBehaviour
 {
     [SerializeField]
     int numOfLandmarks = 1;
@@ -14,7 +15,7 @@ public class Visualizer : MonoBehaviour
     int marginRatio = 10;
 
     [SerializeField]
-    float screenScalar = 10f;
+    float screenScalar = 200f;
 
     [SerializeField]
     GameObject[] prefab;
@@ -26,14 +27,37 @@ public class Visualizer : MonoBehaviour
     GameObject settingsPanel;
 
     [SerializeField]
-    Slider slider;
+    Slider landmarkSlider;
+    [SerializeField]
+    Slider transNoiseSlider;
+    [SerializeField]
+    Slider angNoiseSlider;
+    [SerializeField]
+    Slider rangeNoiseSlider;
+    [SerializeField]
+    Slider bearingNoiseSlider;
+
+    [SerializeField]
+    TextMeshProUGUI landmarkText;
+    [SerializeField]
+    TextMeshProUGUI transNoiseText;
+    [SerializeField]
+    TextMeshProUGUI angNoiseText;
+    [SerializeField]
+    TextMeshProUGUI rangeNoiseText;
+    [SerializeField]
+    TextMeshProUGUI bearingNoiseText;
+
+
+    [SerializeField]
+    Button settingsButton;
 
     bool allowInput = true;
     float marginPixelSize, worldLimitX, worldLimitY, UIScalar = 10f;
 
     RectTransform emptyRect;
 
-    EKF_SLAM slam;
+    EKF_SLAM ekf_slam;
 
     RectTransform robotActualRectTransform, robotMeanRectTransform, robotCovRectTransform;
     List<RectTransform> landmarkActualRectTransformList = new List<RectTransform>();
@@ -47,33 +71,48 @@ public class Visualizer : MonoBehaviour
         marginPixelSize = Screen.height / marginRatio;
         worldLimitX = ScreenXToWorld(Screen.width - marginPixelSize);
         worldLimitY = ScreenYToWorld(Screen.height - marginPixelSize);
-        slam = GetComponent<EKF_SLAM>();
+        ekf_slam = GetComponent<EKF_SLAM>();
+        settingsButton.onClick.AddListener(delegate { ToggleSettings(); });
     }
 
     void Start()
     {
         emptyRect = Instantiate(prefab[2], transform).GetComponent<RectTransform>();
-        slam.InitializeLandmarks(numOfLandmarks, worldLimitX, worldLimitY);
+        ekf_slam.InitializeLandmarks(numOfLandmarks, worldLimitX, worldLimitY);
+
+        //Update game settings
+        numOfLandmarks = (int)landmarkSlider.value;
+        ekf_slam.transNoiseFactor = transNoiseSlider.value;
+        ekf_slam.angNoiseFactor = angNoiseSlider.value;
+        ekf_slam.rangeNoiseFactor = rangeNoiseSlider.value;
+        ekf_slam.bearingNoiseFactor = bearingNoiseSlider.value;
     }
 
     private void Update()
     {
-        numOfLandmarks = (int)slider.value;
+        //Update text
+        landmarkText.text = ((int)landmarkSlider.value).ToString();
+        transNoiseText.text = transNoiseSlider.value.ToString();
+        angNoiseText.text = angNoiseSlider.value.ToString();
+        rangeNoiseText.text = rangeNoiseSlider.value.ToString();
+        bearingNoiseText.text = bearingNoiseSlider.value.ToString();
+
 
         if (Input.GetMouseButtonDown(0) && allowInput)
         {
             Vector2 mousePosition = Input.mousePosition;
 
             //Debug.Log("MousePosition" + mousePosition);
-            if(IsInputValid(mousePosition))
-                slam.SetTargetWorldPoints(ScreenXToWorld(mousePosition.x), ScreenYToWorld(mousePosition.y));
+            if (!RectTransformUtility.RectangleContainsScreenPoint(settingsButton.GetComponent<RectTransform>(), mousePosition, Camera.main))
+                ekf_slam.SetTargetWorldPoints(ScreenXToWorld(mousePosition.x), ScreenYToWorld(mousePosition.y));
+                
         }
         else if (Input.touchCount >= 1 && allowInput)
         {
             Vector2 touchPosition = Input.touches[0].position;
 
-            if (IsInputValid(touchPosition))
-                slam.SetTargetWorldPoints(ScreenXToWorld(touchPosition.x), ScreenYToWorld(touchPosition.y));
+            if (!RectTransformUtility.RectangleContainsScreenPoint(settingsButton.GetComponent<RectTransform>(), touchPosition, Camera.main))
+                ekf_slam.SetTargetWorldPoints(ScreenXToWorld(touchPosition.x), ScreenYToWorld(touchPosition.y));
         }
     }
 
@@ -103,24 +142,24 @@ public class Visualizer : MonoBehaviour
         landmarkActualRectTransformList.Add(rect);
     }
 
-    public void Visualize(Vector<float> X, Vector<float> X_true, Matrix<float> P)
+    public void Visualize(Vector<float> X_predict, Vector<float> X_actual, Matrix<float> P)
     {
-        int numOfStates = X.Count;
+        int numOfStates = X_predict.Count;
 
         //Visualize robots
-        Vector<float> mean_r = X.SubVector(0, 2);
+        Vector<float> mean_r = X_predict.SubVector(0, 2);
         Matrix<float> cov_r = P.SubMatrix(0, 2, 0, 2);
 
         //Visualize robots
-        Vector<float> mean_r_true = X_true.SubVector(0, 2);
+        Vector<float> mean_r_true = X_actual.SubVector(0, 2);
         Matrix<float> cov_r_true = P.SubMatrix(0, 2, 0, 2);
 
         //robotMeanRectTransform.rotation = Quaternion.Euler(0, 0, X[2]);
 
-        robotMeanRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg* X[2]));
+        robotMeanRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg* X_predict[2]));
         robotMeanRectTransform.localPosition = new Vector2(WorldXToScreen(mean_r[0]), WorldYToScreen(mean_r[1]));
 
-        robotActualRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg * X_true[2]));
+        robotActualRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg * X_actual[2]));
         robotActualRectTransform.localPosition = new Vector2(WorldXToScreen(mean_r_true[0]), WorldYToScreen(mean_r_true[1]));
 
         CovarianceVisualization(cov_r, CONFIDENCE, robotCovRectTransform);
@@ -129,7 +168,7 @@ public class Visualizer : MonoBehaviour
         {
             for (int i = 0; i < landmarkCovRectTransformList.Count; i++)
             {
-                Vector<float> mean_m = X.SubVector(3 + 2 * i, 2);
+                Vector<float> mean_m = X_predict.SubVector(3 + 2 * i, 2);
                 Matrix<float> cov_m = P.SubMatrix(3 + 2 * i, 2, 3 + 2 * i, 2);
                 landmarkMeanRectTransformList[i].localPosition = new Vector2(WorldXToScreen(mean_m[0]), WorldYToScreen(mean_m[1]));
                 CovarianceVisualization(cov_m, CONFIDENCE, landmarkCovRectTransformList[i]);
@@ -154,7 +193,7 @@ public class Visualizer : MonoBehaviour
         float angle = Mathf.Rad2Deg * Mathf.Atan2(eigenvectors[0, 1], eigenvectors[0, 0]);
 
         covRect.localRotation = Quaternion.Euler(new Vector3(0, 0, angle));
-        covRect.localScale = new Vector2(width/2, height/2);
+        covRect.localScale = new Vector2(width/1.5f, height/1.5f);
     }
 
 
@@ -163,7 +202,7 @@ public class Visualizer : MonoBehaviour
     {
         foreach (var landmark in observedLandmarkList)
         {
-            RectTransform lmRect = landmarkCovRectTransformList[slam.worldToLocalDictionary[landmark.Key]];
+            RectTransform lmRect = landmarkCovRectTransformList[ekf_slam.worldToLocalDictionary[landmark.Key]];
             Color lineColor = lmRect.GetComponent<Image>().color;
             DrawLine(robotMeanRectTransform.position, new Vector3(lmRect.position.x, lmRect.position.y), lineColor, Time.deltaTime);
 
@@ -197,7 +236,7 @@ public class Visualizer : MonoBehaviour
         Destroy(myLine, duration);
     }
 
-    public void ToggleSettings()
+    void ToggleSettings()
     {
         allowInput = false;
         settingsPanel.SetActive(!settingsPanel.activeSelf);
@@ -218,20 +257,28 @@ public class Visualizer : MonoBehaviour
             Destroy(child.gameObject);
         }
 
-        slam.ResetAll();
+        ekf_slam.ResetAll();
+
+        //Update game settings
+        numOfLandmarks = (int)landmarkSlider.value;
+        ekf_slam.transNoiseFactor = transNoiseSlider.value;
+        ekf_slam.angNoiseFactor = angNoiseSlider.value;
+        ekf_slam.rangeNoiseFactor = rangeNoiseSlider.value;
+        ekf_slam.bearingNoiseFactor = bearingNoiseSlider.value;
         emptyRect = Instantiate(prefab[2], transform).GetComponent<RectTransform>();
 
         landmarkActualRectTransformList.Clear();
         landmarkMeanRectTransformList.Clear();
         landmarkCovRectTransformList.Clear();
-        slam.InitializeLandmarks(numOfLandmarks, worldLimitX, worldLimitY);
+
+        ekf_slam.InitializeLandmarks(numOfLandmarks, worldLimitX, worldLimitY);
 
         ToggleSettings();
     }
 
     void PrefabInitialization(out RectTransform rectTransform, GameObject prefab, Transform transform, Vector2 initialPos, bool isWorld, Quaternion initialWorldRot, float scale, Color color, string name)
     {
-        Debug.Log("Name of object: " + name);
+        //Debug.Log("Name of object: " + name);
 
         rectTransform = Instantiate(prefab, transform).GetComponent<RectTransform>();
 
@@ -240,7 +287,7 @@ public class Visualizer : MonoBehaviour
         else
             rectTransform.localPosition = new Vector2(initialPos.x, initialPos.y);
 
-        Debug.Log(rectTransform.localPosition);
+        //Debug.Log(rectTransform.localPosition);
 
         rectTransform.localRotation = initialWorldRot;
         rectTransform.name = name;
@@ -252,17 +299,6 @@ public class Visualizer : MonoBehaviour
     {
         yield return new WaitForSeconds(waitTime);
         allowInput = true;
-    }
-
-    bool IsInputValid(Vector2 currentPos)
-    {
-        bool isValid = true;
-
-        if (currentPos.x < marginPixelSize || currentPos.x > Screen.width - marginPixelSize ||
-            currentPos.y < marginPixelSize || currentPos.y > Screen.height - marginPixelSize)
-            isValid = false;
-
-        return isValid;
     }
 
     float WorldXToScreen(float world_x)

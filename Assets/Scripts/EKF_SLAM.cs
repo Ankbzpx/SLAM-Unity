@@ -3,7 +3,7 @@ using UnityEngine;
 using MathNet.Numerics.LinearAlgebra;
 using MathNet.Numerics.Distributions;
 
-[RequireComponent(typeof(Visualizer))]
+[RequireComponent(typeof(EKF_Visualizer))]
 public class EKF_SLAM : MonoBehaviour
 {
     //States vector
@@ -11,9 +11,8 @@ public class EKF_SLAM : MonoBehaviour
     //Covariance
     Matrix<float> P;
 
-    float transNoiseFactor = 0.2f, angNoiseFactor = 5f;
-
-    //float rangeNoiseFactor = 1.1f, bearingNoiseFactor = 5f;
+    public float transNoiseFactor = 0.1f, angNoiseFactor = 5f;
+    public float rangeNoiseFactor = 0.01f, bearingNoiseFactor = 1f;
 
     Normal normal = Normal.WithMeanPrecision(0, 1);
     Matrix<float> R, Q;
@@ -33,15 +32,15 @@ public class EKF_SLAM : MonoBehaviour
     float rotVelocity = 10f;
 
     [SerializeField]
-    float rangeMin = 5f;
+    float rangeMin = 0.1f;
 
     [SerializeField]
-    float rangeMax = 60f;
+    float rangeMax = 1.5f;
 
     [SerializeField]
     float bearing = Mathf.PI / 4;
 
-    Visualizer visualizer;
+    EKF_Visualizer visualizer;
     int robotLandmarkIndex = 0;
     // Dictionary that stores associated landmarks
     public Dictionary<int, Vector<float>> landmarkExternalDictionary =
@@ -53,12 +52,12 @@ public class EKF_SLAM : MonoBehaviour
 
     private void Awake()
     {
-        visualizer = GetComponent<Visualizer>();
+        visualizer = GetComponent<EKF_Visualizer>();
     }
     // Start is called before the first frame update
     void Start()
     {
-        R = Matrix<float>.Build.DenseOfDiagonalArray(new float[] { Mathf.Pow(transNoiseFactor, 2), Mathf.Pow(angNoiseFactor, 2) });
+        R = Matrix<float>.Build.DenseOfDiagonalArray(new float[] { rangeNoiseFactor, Mathf.Deg2Rad * bearingNoiseFactor });
         Q = Matrix<float>.Build.DenseOfDiagonalArray(new float[] { Mathf.Pow(transNoiseFactor, 2), Mathf.Pow(transNoiseFactor, 2), Mathf.Pow(Mathf.Deg2Rad * angNoiseFactor, 2) });
         InitializeRobotState(0f, 0f, 0f);
     }
@@ -94,14 +93,12 @@ public class EKF_SLAM : MonoBehaviour
         float ang_noise = deltaDis / 1 * Mathf.Deg2Rad*angNoiseFactor * (float)normal.Sample(),
             dis_noise = deltaDis / 1* transNoiseFactor * (float)normal.Sample();
 
-        //float bearing_noise = Mathf.Deg2Rad*bearingNoiseFactor * (float)normal.Sample(),
-            //range_noise = rangeNoiseFactor * (float)normal.Sample();
 
         StatesUpdate(ref X_rob_actual, deltaDis + dis_noise, deltaAng + ang_noise);
         StatesUpdate(ref X, deltaDis, deltaAng);
         CovarianceUpdate(ref P, X, deltaDis, X[2]);
 
-        observedLandmarks = ObserveLandmarks(X_rob_actual, dis_noise, ang_noise);
+        observedLandmarks = ObserveLandmarks(X_rob_actual, rangeNoiseFactor, bearingNoiseFactor);
         ObservationUpdate(ref X, ref P, X_rob_actual, observedLandmarks);
 
         visualizer.Visualize(X, X_rob_actual, P);
@@ -189,7 +186,7 @@ public class EKF_SLAM : MonoBehaviour
             {(-d[1])/Mathf.Pow(r, 2), (d[0])/Mathf.Pow(r, 2), -1 }});
     }
 
-    Dictionary<int, Vector<float>> ObserveLandmarks(Vector<float> X_true, float rangeNoise, float bearingNoise)
+    Dictionary<int, Vector<float>> ObserveLandmarks(Vector<float> X_true, float rangeNoiseFactor, float bearingNoiseFactor)
     {
         Dictionary<int, Vector<float>>  observations = new Dictionary<int, Vector<float>>();
 
@@ -197,8 +194,11 @@ public class EKF_SLAM : MonoBehaviour
         {
             CalculateMovement(out float r, out float b, X_true, landmarkExternalDictionary[idx]);
 
-            r += rangeNoise;
-            b = ClampRad(b + bearingNoise);
+            float bearing_noise = Mathf.Deg2Rad*bearingNoiseFactor * (float)normal.Sample(),
+              range_noise = rangeNoiseFactor * (float)normal.Sample();
+
+            r += range_noise;
+            b = ClampRad(b + bearing_noise);
 
             if (Mathf.Abs(b) <= bearing && r >= rangeMin && r <= rangeMax)
             {
