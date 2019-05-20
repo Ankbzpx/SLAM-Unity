@@ -1,9 +1,10 @@
 ﻿using MathNet.Numerics.Distributions;
 using MathNet.Numerics.LinearAlgebra;
+using MathNet.Numerics.Differentiation;
 using System.Collections.Generic;
-using System;
 using UnityEngine;
-using MathNet.Numerics.LinearAlgebra.Complex.Solvers;
+using System;
+using Random = System.Random;
 
 public class GraphSLAM : MonoBehaviour
 {
@@ -17,60 +18,64 @@ public class GraphSLAM : MonoBehaviour
 
     public int historyLength = 100;
 
-    bool isOptimizing = false;
+    bool allowOptimization = false, isOptimizing = false;
 
-    Queue<Vector<float>> robotTrace_predict = new Queue<Vector<float>>();
-    Queue<Vector<float>> robotTrace_actual = new Queue<Vector<float>>();
-    Queue<Dictionary<int, Vector<float>>> landmarkTrace = new Queue<Dictionary<int, Vector<float>>>();
+    List<Vector<double>> robotTrace_predict = new List<Vector<double>>();
+    List<Vector<double>> robotTrace_actual = new List<Vector<double>>();
+    List<Dictionary<int, Vector<double>>> landmarkTrace = new List<Dictionary<int, Vector<double>>>();
+
+    List<List<int>> graph = new List<List<int>>();
 
     //States vector
-    Vector<float> X_rob_predict, X_rob_actual;
+    Vector<double> X_rob_predict, X_rob_actual;
 
-    float transNoiseFactor = 0.2f, angNoiseFactor = 5f;
-    float rangeNoiseFactor = 0.02f, bearingNoiseFactor = 1.5f;
+    public double transNoiseFactor = 0.1, angNoiseFactor = 5;
+    public double rangeNoiseFactor = 0.01, bearingNoiseFactor = 1;
 
     Normal normal = Normal.WithMeanPrecision(0, 1);
-    Matrix<float> R, Q;
+    Matrix<double> R, Q;
 
-    Dictionary<int, Vector<float>> observedLandmarks = new Dictionary<int, Vector<float>>();
+    Dictionary<int, Vector<double>> observedLandmarks = new Dictionary<int, Vector<double>>();
 
-    float targetDis = 0f, targetAng = 0f, absAng = 0f;
+    double targetDis = 0, targetAng = 0, absAng = 0;
     //bool isTargetReached = false;
-
-    float threshold = 0.01f;
 
     //Car parameters
     [SerializeField]
-    float transVelocity = 10f;
+    double transVelocity = 10;
 
     [SerializeField]
-    float rotVelocity = 10f;
+    double rotVelocity = 10;
 
     [SerializeField]
-    float rangeMin = 0.1f;
+    double rangeMin = 0.1;
 
     [SerializeField]
-    float rangeMax = 1.5f;
+    double rangeMax = 1.5;
 
     [SerializeField]
-    float bearing = Mathf.PI / 4;
+    double bearing = Math.PI / 4;
 
-    int robotLandmarkIndex = 0;
     // Dictionary that stores associated landmarks
-    public Dictionary<int, Vector<float>> landmarkDictionary =
-        new Dictionary<int, Vector<float>>();
+    public Dictionary<int, Vector<double>> landmarkDictionary =
+        new Dictionary<int, Vector<double>>();
 
     GraphVisualizer graphVisualizer;
 
+    const double Deg2Rad = Math.PI / 180;
+    const double Rad2Deg = 180 / Math.PI;
+    Random random;
+
     private void Awake()
     {
+        random = new Random();
         graphVisualizer = GetComponent<GraphVisualizer>();
     }
     // Start is called before the first frame update
     void Start()
     {
-        R = Matrix<float>.Build.DenseOfDiagonalArray(new float[] { Mathf.Pow(rangeNoiseFactor, 2), Mathf.Pow(Mathf.Deg2Rad * bearingNoiseFactor, 2) });
-        Q = Matrix<float>.Build.DenseOfDiagonalArray(new float[] { Mathf.Pow(transNoiseFactor, 2), Mathf.Pow(transNoiseFactor, 2), Mathf.Pow(Mathf.Deg2Rad * angNoiseFactor, 2) });
+        R = Matrix<double>.Build.DenseOfDiagonalArray(new double[] { rangeNoiseFactor, Deg2Rad * bearingNoiseFactor });
+        Q = Matrix<double>.Build.DenseOfDiagonalArray(new double[] { Math.Pow(transNoiseFactor, 2), Math.Pow(transNoiseFactor, 2), Math.Pow(Deg2Rad * angNoiseFactor, 2) });
         InitializeRobotState(0f, 0f, 0f);
     }
 
@@ -79,33 +84,31 @@ public class GraphSLAM : MonoBehaviour
         if (isOptimizing)
             return;
 
-
         if (absAng > 0)
         {
-            float delta_ang = Time.fixedDeltaTime * rotVelocity;
-            Graph_Update(0f, Mathf.Sign(targetAng) * delta_ang);
+            double delta_ang = Time.fixedDeltaTime * rotVelocity;
+            Graph_Update(0, Math.Sign(targetAng) * delta_ang);
             absAng -= delta_ang;
         }
         else
         {
             if (targetDis > 0)
             {
-                float delta_dis = Time.fixedDeltaTime * transVelocity;
+                double delta_dis = Time.fixedDeltaTime * transVelocity;
                 Graph_Update(delta_dis, 0f);
                 targetDis -= delta_dis;
             }
         }
     }
 
-    public void SetTargetWorldPoints(float world_x, float world_y)
+    public void SetTargetWorldPoints(double world_x, double world_y)
     {
         CalculateTargetPose(X_rob_actual, world_x, world_y, out targetDis, out targetAng, out absAng);
     }
 
-    void Graph_Update(float deltaDis, float deltaAng)
+    void Graph_Update(double deltaDis, double deltaAng)
     {
-        //Debug.Log("Predict count: " + robotTrace_predict.Count);
-        //Debug.Log("Actual count: " + robotTrace_actual.Count);
+        allowOptimization = false;
 
         //Shall not happen
         if (robotTrace_predict.Count != robotTrace_actual.Count)
@@ -113,108 +116,268 @@ public class GraphSLAM : MonoBehaviour
 
         //Debug.Log("Graph update");
 
-        //Avoid Overflow
-        if (robotTrace_predict.Count >= historyLength)
-        {
-            //Dequeue
-            robotTrace_predict.Dequeue();
-            robotTrace_actual.Dequeue();
-        }
+        ////Avoid Overflow
+        //if (robotTrace_predict.Count >= historyLength)
+        //{
+        //    //Needs Debugging!
+        //    robotTrace_predict.RemoveAt(0);
+        //    robotTrace_actual.RemoveAt(0);
+        //}
 
-        float ang_noise = deltaDis / 1 * Mathf.Deg2Rad * angNoiseFactor * (float)normal.Sample(),
-            dis_noise = deltaDis / 1 * transNoiseFactor * (float)normal.Sample();
+        double ang_noise = deltaDis / 1 * Deg2Rad * angNoiseFactor * normal.Sample(),
+            dis_noise = deltaDis / 1 * transNoiseFactor * normal.Sample();
 
         StatesUpdate(ref X_rob_actual, deltaDis + dis_noise, deltaAng + ang_noise);
         StatesUpdate(ref X_rob_predict, deltaDis, deltaAng);
         observedLandmarks = ObserveLandmarks(X_rob_actual, rangeNoiseFactor, bearingNoiseFactor);
+
+        graphVisualizer.Visualize(X_rob_predict, X_rob_actual, false);
 
         if (deltaDis != 0)
         {
             if (count == recordInterval)
             {
                 graphVisualizer.Visualize(X_rob_predict, X_rob_actual, true);
-                landmarkTrace.Enqueue(observedLandmarks);
-                robotTrace_predict.Enqueue(X_rob_predict.Clone());
-                robotTrace_actual.Enqueue(X_rob_actual.Clone());
+
+                BuildGraph(observedLandmarks, landmarkTrace, ref graph);
+
+                landmarkTrace.Add(observedLandmarks);
+                robotTrace_predict.Add(X_rob_predict.Clone());
+                robotTrace_actual.Add(X_rob_actual.Clone());
+
+                List<List<int>> cycles = new List<List<int>>();
+                //cycles = FindCycle(graph, landmarkTrace.Count - 1, landmarkTrace.Count - 1, new List<int>(), new List<int>(), cycles);
+                cycles.Add(FindCycleSimplified(graph));
+
+                if (cycles.Count != 0 && cycles[0].Count != 0)
+                {
+                    //Debug.Log("Debug graph:");
+                    //for (int h = 0; h < graph.Count; h++)
+                    //{
+                    //    string str = h + "-";
+                    //    for (int i = 0; i < graph[h].Count; i++)
+                    //    {
+                    //        str += graph[h][i] + "-";
+                    //    }
+
+                    //    Debug.Log("Entry: " + str);
+                    //}
+
+                    //Debug.Log("Print all cycle: ");
+                    //for (int h = 0; h < cycles.Count; h++)
+                    //{
+                    //    string str = "";
+
+                    //    for (int i = 0; i < cycles[h].Count; i++)
+                    //    {
+                    //        str += cycles[h][i] + "-";
+                    //    }
+
+                    //    Debug.Log("Cycle: " + str);
+                    //}
+
+
+                    allowOptimization = true;
+                    Optimize(cycles);
+                }
 
                 count = 0;
             }
-            else
-                graphVisualizer.Visualize(X_rob_predict, X_rob_actual, false);
-
+               
             count++;
         }
     }
 
-    public void Optimize()
+    void BuildGraph(Dictionary<int, Vector<double>> newObservations, List<Dictionary<int, Vector<double>>> landmarkTrace, 
+        ref List<List<int>> graph)
     {
-        Debug.Log("Optimize");
+        //Add empty entry for new observation
+        graph.Add(new List<int>());
+
+        //foreach pose corresponded observations
+        for (int i = 0; i < landmarkTrace.Count; i++)
+        {
+            //For each observed landmark at given pose
+            foreach (int lmidx in landmarkTrace[i].Keys)
+            {
+                //If the new observation has the same landmark as the old ones
+                if (newObservations.ContainsKey(lmidx))
+                {
+                    graph[i].Add(landmarkTrace.Count);
+                    graph[landmarkTrace.Count].Add(i);
+
+                    //Only care if two poses share same observation
+                    break;
+                }
+            }
+        }
+
+        if (landmarkTrace.Count != 0)
+        {
+            //Pose of t-1 and t are connected
+            if (!graph[landmarkTrace.Count].Contains(landmarkTrace.Count - 1))
+                graph[landmarkTrace.Count].Add(landmarkTrace.Count - 1);
+
+            if (!graph[landmarkTrace.Count - 1].Contains(landmarkTrace.Count))
+                graph[landmarkTrace.Count - 1].Add(landmarkTrace.Count);
+        }
+    }
+
+    List<int> FindCycleSimplified(List<List<int>> graph)
+    {
+        List<int> cycle = new List<int>();
+        int index = graph.Count - 1;
+
+        for (int i = 0; i < graph.Count - 2; i++)
+        {
+            if (graph[graph.Count - 1].Contains(i))
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if (index != graph.Count - 1)
+        {
+            cycle.Add(graph.Count - 1);
+
+            for (int i = index; i < graph.Count - 1; i++)
+            {
+                cycle.Add(i);
+            }
+        }
+
+        return cycle;
+    }
+
+    //Depth first search for finding cycle
+    List<List<int>> FindCycle(List<List<int>> graph, int start, int current, List<int> visited, List<int> cycle, List<List<int>> cycles)
+    {
+        if (!visited.Contains(current))
+        {
+            visited.Add(current);
+            cycle.Add(current);
+            foreach (int v in graph[current])
+            {
+                if (!visited.Contains(v))
+                {
+                    if (graph[v].Count == 1)
+                    {
+                        visited.Add(v);
+                    }
+                    else
+                    {
+                        if (start != current && graph[v].Contains(start))
+                        {
+                            visited.Add(v);
+                            cycle.Add(v);
+                            cycles.Add(new List<int>(cycle));
+                            cycle.Remove(cycle.Count - 1);
+                        }
+                        else
+                        {
+                            FindCycle(graph, start, v, visited, cycle, cycles);
+                        }
+                    }
+                }
+            }
+
+            cycle.Remove(cycle.Count - 1);
+        }
+
+        return cycles;
+    }
+
+
+    void Optimize(List<List<int>> cycles)
+    {
+        if (!allowOptimization)
+            return;
 
         isOptimizing = true;
 
         for (int i = 0; i < optimizeEpoch; i++)
         {
-            OptimizeOnce(ref X_rob_predict, ref robotTrace_predict);
+            OptimizeOnce(ref robotTrace_predict, landmarkTrace, cycles);
         }
+
+        //Debug.Log("Before update: " + X_rob_predict.ToString());
+        X_rob_predict = robotTrace_predict[robotTrace_predict.Count - 1];
+
+        //Debug.Log("After update: " + robotTrace_predict[robotTrace_predict.Count - 1].ToString());
+        //Debug.Log("Actual pose: " + X_rob_actual.ToString());
 
         isOptimizing = !graphVisualizer.OptimizedVisualization(robotTrace_predict);
     }
 
-    void OptimizeOnce(ref Vector<float> latest_X_predict, ref Queue<Vector<float>> robotTrace_predict)
+    void OptimizeOnce(ref List<Vector<double>> robotTrace_predict, List<Dictionary<int, Vector<double>>> landmarkTrace, List<List<int>> cycles)
     {
-        bool containSameLandmarks = false;
+        bool isConnected = true;
+        List<int> poseList = new List<int>();
+        List<int[]> indexPairList = new List<int[]>();
+        List<int[]> landmarkPairList = new List<int[]>();
 
-        Dictionary<int, Vector<float>>[] landmarkTrace_array = landmarkTrace.ToArray();
-        Vector<float> robotTrace_predict_vector = QueueToVector(robotTrace_predict);
+        GetPoseListAndPairs(cycles, ref poseList, ref indexPairList, ref landmarkPairList);
 
-        Vector<float> b = Vector<float>.Build.SparseOfArray(new float[robotTrace_predict_vector.Count]);
-        Matrix<float> H = Matrix<float>.Build.SparseOfArray(new float[robotTrace_predict_vector.Count, robotTrace_predict_vector.Count]);
+        double error = 100f;
+        int optEpoch = optimizeEpoch;
 
-        int[] flagArray = new int[robotTrace_predict_vector.Count / 3];
-
-        //For each combination
-        foreach (int[] indexPair in GetIndexPairs(robotTrace_predict_vector.Count / 3))
+        while (error > 1f && optEpoch > 0)
         {
+            error = 0f;
 
-            Vector<float> X_i = robotTrace_predict_vector.SubVector(3 * indexPair[0], 3);
-            Dictionary<int, Vector<float>> lmObs_i = landmarkTrace_array[indexPair[0]];
-
-            Vector<float> X_j = robotTrace_predict_vector.SubVector(3 * indexPair[1], 3);
-            Dictionary<int, Vector<float>> lmObs_j = landmarkTrace_array[indexPair[1]];
-
-            //Debug.Log("X_i observed landmarks: " + lmObs_i.Count);
-            //Debug.Log("X_j observed landmarks: " + lmObs_j.Count);
-
-
-            Matrix<float> H_ii = H.SubMatrix(3 * indexPair[0], 3, 3 * indexPair[0], 3);
-            Matrix<float> H_ij = H.SubMatrix(3 * indexPair[0], 3, 3 * indexPair[1], 3);
-            Matrix<float> H_ji = H.SubMatrix(3 * indexPair[1], 3, 3 * indexPair[0], 3);
-            Matrix<float> H_jj = H.SubMatrix(3 * indexPair[1], 3, 3 * indexPair[1], 3);
-
-            Vector<float> b_i = b.SubVector(3 * indexPair[0], 3);
-            Vector<float> b_j = b.SubVector(3 * indexPair[1], 3);
-
-            Matrix<float> omega = GetOmega(X_i, X_j);
-
-            //Loop through all landmarks
-            foreach (int lmIdx in landmarkDictionary.Keys)
+            List<Vector<double>> robotTraceWithConstraints = new List<Vector<double>>();
+            foreach (int idx in poseList)
             {
-                //If same landmark is observed at different robot pos
-                if (lmObs_i.ContainsKey(lmIdx) && lmObs_j.ContainsKey(lmIdx))
+                robotTraceWithConstraints.Add(robotTrace_predict[idx].SubVector(0, 2));
+            }
+
+            //Return if no constraints exist in current trajectory
+            if (robotTraceWithConstraints.Count == 0)
+                return;
+
+            //Start optimization
+            Vector<double> robotTrace_optimize_vector = ListToVector(robotTraceWithConstraints);
+            Vector<double> b = Vector<double>.Build.SparseOfArray(new double[robotTrace_optimize_vector.Count]);
+            Matrix<double> H = Matrix<double>.Build.SparseOfArray(new double[robotTrace_optimize_vector.Count, robotTrace_optimize_vector.Count]);
+
+
+            int connectedCount = 0;
+
+            for (int i = 0; i < indexPairList.Count; i++)
+            {
+                int[] indexPair = indexPairList[i];
+                int[] landmarkPair = landmarkPairList[i];
+
+                //Observation dictionary of i and j
+                Dictionary<int, Vector<double>> lmObs_i = landmarkTrace[landmarkPair[0]];
+                Dictionary<int, Vector<double>> lmObs_j = landmarkTrace[landmarkPair[1]];
+
+                Vector<double> X_i = robotTrace_predict[landmarkPair[0]]; /*robotTrace_optimize_vector.SubVector(2 * indexPair[0], 2);*/
+                Vector<double> X_j = robotTrace_predict[landmarkPair[1]]; /*robotTrace_optimize_vector.SubVector(2 * indexPair[1], 2);*/
+
+                Matrix<double> H_ii = H.SubMatrix(2 * indexPair[0], 2, 2 * indexPair[0], 2);
+                Matrix<double> H_ij = H.SubMatrix(2 * indexPair[0], 2, 2 * indexPair[1], 2);
+                Matrix<double> H_ji = H.SubMatrix(2 * indexPair[1], 2, 2 * indexPair[0], 2);
+                Matrix<double> H_jj = H.SubMatrix(2 * indexPair[1], 2, 2 * indexPair[1], 2);
+
+                Vector<double> b_i = b.SubVector(2 * indexPair[0], 2);
+                Vector<double> b_j = b.SubVector(2 * indexPair[1], 2);
+
+                connectedCount = 0;
+
+                //Motion constraints (adjacent nodes)
+                if (Math.Abs(landmarkPair[0] - landmarkPair[1]) == 1)
                 {
-                    if (!containSameLandmarks)
-                        containSameLandmarks = true;
+                    Vector<double> err = GetErrorMotion(X_i, X_j, robotTrace_actual[landmarkPair[0]] - robotTrace_actual[landmarkPair[1]]);
+                    Matrix<double> A = GetJacobianA();
+                    Matrix<double> B = -GetJacobianA();
+                    Matrix<double> omega = GetOmegaMotion(X_i, X_j);
 
-                    //set flag
-                    flagArray[indexPair[0]] = 1;
-                    flagArray[indexPair[1]] = 1;
+                    //Debug.Log("Motion error: " + err.ToString());
+                    error += err.L2Norm();
 
-                    Vector<float> err = GetError(X_i, X_j, lmObs_i[lmIdx], lmObs_j[lmIdx]);
-                    Matrix<float> A = GetJacobianA(X_i, lmObs_i[lmIdx]);
-                    Matrix<float> B = -GetJacobianA(X_j, lmObs_j[lmIdx]);
-                    
                     //Omega, update H, b
-
                     H_ii += A.Transpose() * omega * A;
                     H_ij += A.Transpose() * omega * B;
                     H_ji += B.Transpose() * omega * A;
@@ -222,288 +385,360 @@ public class GraphSLAM : MonoBehaviour
 
                     b_i += A.Transpose() * omega * err;
                     b_j += B.Transpose() * omega * err;
+
+                    connectedCount++;
+
                 }
-            }
 
-            H.SetSubMatrix(3 * indexPair[0], 3, 3 * indexPair[0], 3, H_ii);
-            H.SetSubMatrix(3 * indexPair[0], 3, 3 * indexPair[1], 3, H_ij);
-            H.SetSubMatrix(3 * indexPair[1], 3, 3 * indexPair[0], 3, H_ji);
-            H.SetSubMatrix(3 * indexPair[1], 3, 3 * indexPair[1], 3, H_jj);
-
-            b.SetSubVector(3 * indexPair[0], 3, b_i);
-            b.SetSubVector(3 * indexPair[1], 3, b_j);
-        }
-
-        if (containSameLandmarks)
-        {
-            //Debug.Log("Solve the equation...");
-
-            //Fill in identity matrix
-            //for (int i = 0; i < flagArray.Length; i++)
-            //{
-            //    if (flagArray[i] == 0)
-            //    {
-            //        Matrix<float> H_kk = H.SubMatrix(3 * i, 3, 3 * i, 3);
-            //        H_kk += Matrix<float>.Build.SparseIdentity(3);
-            //        H.SetSubMatrix(3 * i, 3, 3 * i, 3, H_kk);
-            //    }
-            //}
-
-
-            //Matrix<float> H_11 = H.SubMatrix(0, 3, 0, 3);
-            //H_11 += Matrix<float>.Build.SparseIdentity(3);
-            //H.SetSubMatrix(0, 3, 0, 3, H_11);
-
-
-
-            Debug.Log(H.RowCount);
-            Debug.Log(H.Rank());
-
-
-            var svd = H.Svd(true);
-            Debug.Log(svd.Rank);
-            Debug.Log(svd.W.RowCount);
-
-            //Debug.Log(H.ToString());
-            Debug.Log("b: ");
-            Debug.Log(b.ToString());
-
-            //Solve
-            Vector<float> X_delta = H.Solve(-b);
-
-            Debug.Log("X_delta: ");
-            Debug.Log(X_delta.ToString());
-
-            for (int i = 0; i < robotTrace_predict_vector.Count; i++)
-            {
-                if (!float.IsNaN(X_delta[i]) && !float.IsInfinity(X_delta[i]))
+          
+                //Observation constraint
+                //Loop through all landmarks observed at i
+                foreach (int lmIdx in lmObs_i.Keys)
                 {
-                    robotTrace_predict_vector[i] += X_delta[i];
+                    //If same landmark is also observed at j
+                    if (lmObs_j.ContainsKey(lmIdx))
+                    {
+                        Vector<double> err = GetErrorObservation(X_i, X_j, lmObs_i[lmIdx], lmObs_j[lmIdx]);
+                        //Debug.Log("Error x: " + err.L2Norm());
+
+                        if (!double.IsNaN(err.L2Norm()))
+                        {
+                            error += err.L2Norm();
+                            //Debug.Log("Error vector: " + err.ToString());
+
+                            //Matrix<double> A = CalculateJacobianA(X_i, X_j, lmObs_i[lmIdx], lmObs_j[lmIdx]);
+                            //Matrix<double> B = CalculateJacobianB(X_i, X_j, lmObs_i[lmIdx], lmObs_j[lmIdx]);
+
+                            Matrix<double> A = GetJacobianA(X_i, lmObs_i[lmIdx]);
+                            Matrix<double> B = -GetJacobianA(X_j, lmObs_j[lmIdx]);
+                            Matrix<double> omega = GetOmegaObservation(X_i, X_j, lmObs_i[lmIdx], lmObs_j[lmIdx]);
+
+
+                            //Omega, update H, b
+                            H_ii += A.Transpose() * omega * A;
+                            H_ij += A.Transpose() * omega * B;
+                            H_ji += B.Transpose() * omega * A;
+                            H_jj += B.Transpose() * omega * B;
+
+                            b_i += A.Transpose() * omega * err;
+                            b_j += B.Transpose() * omega * err;
+
+                            connectedCount++;
+                        }
+                        else
+                        {
+                            //Debug.Log("Nan detected.");
+                        }                     
+                    }
+                }
+
+                H.SetSubMatrix(2 * indexPair[0], 2, 2 * indexPair[0], 2, H_ii);
+                H.SetSubMatrix(2 * indexPair[0], 2, 2 * indexPair[1], 2, H_ij);
+                H.SetSubMatrix(2 * indexPair[1], 2, 2 * indexPair[0], 2, H_ji);
+                H.SetSubMatrix(2 * indexPair[1], 2, 2 * indexPair[1], 2, H_jj);
+
+                b.SetSubVector(2 * indexPair[0], 2, b_i);
+                b.SetSubVector(2 * indexPair[1], 2, b_j);
+
+                if (connectedCount == 0)
+                {
+                    string lm = "";
+                    foreach (var idx in landmarkPair)
+                    {
+                        lm += idx + ", ";
+                    }
+
+                    Debug.Log("landmark Pair not connected: " + lm);
+
+                    //string id = "";
+                    //foreach (var idx in indexPair)
+                    //{
+                    //    id += idx + ", ";
+                    //}
+
+                    //Debug.Log("Index Pair not connected: " + id);
+
+                    isConnected = false;
                 }
             }
 
-            //robotTrace_predict_vector += X_delta;
+            if (isConnected)
+            {
+                //Debug.Log("Graph connected");
+                //Debug.Log("Solving the optimization problem...");
 
-            latest_X_predict[0] = robotTrace_predict_vector[robotTrace_predict_vector.Count - 3];
-            latest_X_predict[1] = robotTrace_predict_vector[robotTrace_predict_vector.Count - 2];
-            latest_X_predict[2] = robotTrace_predict_vector[robotTrace_predict_vector.Count - 1];
+                Matrix<double> H_11 = H.SubMatrix(0, 2, 0, 2);
+                H_11 += Matrix<double>.Build.SparseIdentity(2);
+                H.SetSubMatrix(0, 2, 0, 2, H_11);
+
+                H = 0.5f * (H + H.Transpose());
+
+                Vector<double> X_delta = H.Cholesky().Solve(-b);
+                //Vector<double> X_delta = H.Solve(-b);
+
+                //Debug.Log(X_delta.ToString());
+
+                for (int i = 0; i < robotTrace_optimize_vector.Count; i++)
+                {
+                    if (!double.IsNaN(X_delta[i]) && !double.IsInfinity(X_delta[i]))
+                    {
+                        robotTrace_optimize_vector[i] += X_delta[i];
+                    }
+                }
+
+                robotTraceWithConstraints = VectorToList(robotTrace_optimize_vector);
+
+                for (int i = 0; i < poseList.Count; i++)
+                {
+                    robotTrace_predict[poseList[i]][0] = robotTraceWithConstraints[i][0];
+                    robotTrace_predict[poseList[i]][1] = robotTraceWithConstraints[i][1];
+                }
+            }
+
+            optEpoch--;
+            Debug.Log("Error :" + error);
         }
-
-        robotTrace_predict = VectorToQueue(robotTrace_predict_vector);
     }
 
-    Matrix<float> GetOmega(Vector<float> X_i, Vector<float> X_j/*, Vector<float> z_i, Vector<float> z_j*/)
+    Matrix<double> GetOmegaMotion(Vector<double> X_i, Vector<double> X_j)
     {
-        Matrix<float> rt_i = GetRotationMatrix(X_i[2]);
-        Matrix<float> rt_j = GetRotationMatrix(X_j[2]);
+        Matrix<double> rt_i = GetRotationMatrix(X_i[2]);
+        Matrix<double> rt_j = GetRotationMatrix(X_j[2]);
 
-        return (rt_i * Q * rt_i.Transpose() + rt_j * Q * rt_j.Transpose()).Inverse();
-
-        //return Matrix<float>.Build.DenseIdentity(3);
-
-        //float ang_j = ClampRad(X_j[2] + z_j[1]);
-        //float ang_i = ClampRad(X_i[2] + z_i[1]);
-
-        //Vector<float> X_delta_i = Vector<float>.Build.DenseOfArray(new float[3]
-        //{
-        //    X_i[0] + z_i[0] * Mathf.Cos(ang_i),
-        //    X_i[1] + z_i[0] * Mathf.Sin(ang_i),
-        //    ang_i
-        //});
-
-        //Vector<float> X_delta_j = Vector<float>.Build.DenseOfArray(new float[3]
-        //{
-        //    X_j[0] + z_j[0] * Mathf.Cos(ang_j),
-        //    X_j[1] + z_j[0] * Mathf.Sin(ang_j),
-        //    ang_j
-        //});
-
-        //Vector<float> diff = X_delta_j - X_delta_i;
-        //Matrix<float> diff_norm = (diff - diff.Sum()).ToRowMatrix();
-
-        //Debug.Log((diff_norm.Transpose() * diff_norm).Inverse());
-
-        //return (diff_norm.Transpose() * diff_norm).Inverse();
+        return (rt_i * Q * rt_i.Transpose() + rt_j * Q * rt_j.Transpose()).Inverse().SubMatrix(0, 2, 0, 2);
     }
 
-    Matrix<float> GetRotationMatrix(float theta)
+    Matrix<double> GetOmegaObservation(Vector<double> X_i, Vector<double> X_j, Vector<double> lm_i, Vector<double> lm_j)
     {
-        return Matrix<float>.Build.DenseOfArray(new float[3, 3]
-            {{Mathf.Cos(theta), -Mathf.Sin(theta), 0 }, 
-            {Mathf.Sin(theta), Mathf.Cos(theta), 0}, 
+        //Matrix<double> rt_i = GetRotationMatrix(X_i[2]);
+        //Matrix<double> rt_j = GetRotationMatrix(X_j[2]);
+
+        //return (rt_i * Q * rt_i.Transpose() + rt_j * Q * rt_j.Transpose()).Inverse().SubMatrix(0, 2, 0, 2);
+
+        Matrix<double> J_i = LmJacobian(X_i, lm_i);
+        Matrix<double> J_j = LmJacobian(X_j, lm_j);
+
+        return (J_i.Transpose() * R * J_i + J_j.Transpose() * R * J_j).Inverse().SubMatrix(0, 2, 0, 2);
+    }
+
+    Matrix<double> GetRotationMatrix(double theta)
+    {
+        return Matrix<double>.Build.DenseOfArray(new double[3, 3]
+            {{Math.Cos(theta), -Math.Sin(theta), 0 }, 
+            {Math.Sin(theta), Math.Cos(theta), 0}, 
             {0, 0, 1.0f }});
     }
 
-
-    Vector<float> GetError(Vector<float> X_i, Vector<float> X_j, Vector<float> z_i, Vector<float> z_j)
+    Matrix<double> LmJacobian(Vector<double> X_est, Vector<double> X_lm_est)
     {
-        float ang_j = ClampRad(X_j[2] + z_j[1]);
-        float ang_i = ClampRad(X_i[2] + z_i[1]);
+        Vector<double> d = X_est.SubVector(0, 2) - X_lm_est;
+        double r = (double)d.L2Norm();
 
-
-        float e_x = X_j[0] + z_j[0] * Mathf.Cos(ang_j) - (X_i[0] + z_i[0] * Mathf.Cos(ang_i));
-        float e_y = X_j[1] + z_j[0] * Mathf.Sin(ang_j) - (X_i[1] + z_i[0] * Mathf.Sin(ang_i));
-        float e_a = ang_j - ang_i;
-
-        return Vector<float>.Build.DenseOfArray(new float[3] { e_x, e_y, e_a });
+        return Matrix<double>.Build.DenseOfArray(new double[2, 3]
+            {{(d[0])/r, (d[1])/r, 0},
+            {(-d[1])/Math.Pow(r, 2), (d[0])/Math.Pow(r, 2), -1 }});
     }
 
-    Matrix<float> GetJacobianA(Vector<float> X, Vector<float> z)
+    Vector<double> GetErrorMotion(Vector<double> Xt, Vector<double> Xt_1, Vector<double> diff)
     {
-        float ang = ClampRad(X[2] + z[1]);
-
-        return Matrix<float>.Build.DenseOfArray(new float[3, 3]
-            {{-1, 0, z[0]*Mathf.Sin(ang)},
-             {0, -1, -z[0]*Mathf.Cos(ang)},
-             {0, 0, -1 }});
+        Vector<double> xt_obs = Xt_1 + diff;
+        return Vector<double>.Build.DenseOfArray(new double[2] { xt_obs[0] - Xt[0], xt_obs[1] - Xt[1] });
     }
 
-    void InitializeRobotState(float x, float y, float theta)
+    Vector<double> GetErrorObservation(Vector<double> X_i, Vector<double> X_j, Vector<double> z_i, Vector<double> z_j)
     {
-        X_rob_predict = Vector<float>.Build.DenseOfArray(new float[] { 0, 0, 0 });
+        double lm_i_x = X_i[0] + z_i[0] * Math.Cos(X_i[2] + z_i[1]);
+        double lm_i_y = X_i[1] + z_i[0] * Math.Sin(X_i[2] + z_i[1]);
+
+        double lm_j_x = X_j[0] + z_j[0] * Math.Cos(X_j[2] + z_j[1]);
+        double lm_j_y = X_j[1] + z_j[0] * Math.Sin(X_j[2] + z_j[1]);
+
+        return Vector<double>.Build.DenseOfArray(new double[2] { lm_j_x - lm_i_x, lm_j_y - lm_i_y });
+    }
+
+    Matrix<double> GetJacobianA()
+    {
+        return Matrix<double>.Build.DenseOfArray(new double[2, 2]
+            {{-1, 0},
+             {0, -1}});
+    }
+
+    Matrix<double> GetJacobianA(Vector<double> X, Vector<double> z)
+    {
+        return Matrix<double>.Build.DenseOfArray(new double[2, 2]
+            {{-1, 0},
+             {0, -1}});
+    }
+
+    void InitializeRobotState(double x, double y, double theta)
+    {
+        X_rob_predict = Vector<double>.Build.DenseOfArray(new double[] { 0, 0, 0 });
         X_rob_actual = X_rob_predict.Clone();
 
         observedLandmarks = ObserveLandmarks(X_rob_actual, rangeNoiseFactor, bearingNoiseFactor);
 
-        robotTrace_predict.Enqueue(X_rob_predict.Clone());
-        robotTrace_actual.Enqueue(X_rob_actual.Clone());
-        landmarkTrace.Enqueue(observedLandmarks);
-        graphVisualizer.VisualizerRobotRegistration(x, y, theta);
+        BuildGraph(observedLandmarks, landmarkTrace, ref graph);
+        robotTrace_predict.Add(X_rob_predict.Clone());
+        robotTrace_actual.Add(X_rob_actual.Clone());
+        landmarkTrace.Add(observedLandmarks);
+        graphVisualizer.VisualizerRobotRegistration((float)x, (float)y, (float)theta);
     }
 
-    public void InitializeLandmarks(int numOfLandmarks, float worldLimitX, float worldLimitY)
+    public void InitializeLandmarks(int numOfLandmarks, double worldLimitX, double worldLimitY)
     {
         landmarkDictionary.Clear();
 
-        //landmarkDictionary.Add(0, Vector<float>.Build.DenseOfArray(new float[] { 0.5f, 0.5f }));
+        //landmarkDictionary.Add(0, Vector<double>.Build.DenseOfArray(new double[] { 0.5f, 0.5f }));
         //graphVisualizer.VisualizerLandmarkRegistration(0, 0.5f, 0.5f);
 
         for (int i = 0; i < numOfLandmarks; i++)
         {
-            float x = UnityEngine.Random.Range(0, worldLimitX);
-            float y = UnityEngine.Random.Range(0, worldLimitY);
+            double x = random.NextDouble() * worldLimitX;
+            double y = random.NextDouble() * worldLimitY;
 
-            landmarkDictionary.Add(i, Vector<float>.Build.DenseOfArray(new float[] { x, y }));
-            graphVisualizer.VisualizerLandmarkRegistration(i, x, y);
+            landmarkDictionary.Add(i, Vector<double>.Build.DenseOfArray(new double[] { x, y }));
+            graphVisualizer.VisualizerLandmarkRegistration(i, (float)x, (float)y);
         }
     }
 
-    void CalculateTargetPose(Vector<float> X_true, float x_world, float y_world, out float t_dis, out float t_ang, out float abs_ang)
+    void CalculateTargetPose(Vector<double> X_true, double x_world, double y_world, out double t_dis, out double t_ang, out double abs_ang)
     {
-        float x_r = X_true[0];
-        float y_r = X_true[1];
-        float theta_r = X_true[2];
+        double x_r = X_true[0];
+        double y_r = X_true[1];
+        double theta_r = X_true[2];
 
         // Calculate distance and theta from target world point
-        t_dis = Mathf.Sqrt(Mathf.Pow(x_world - x_r, 2) + Mathf.Pow(y_world - y_r, 2));
-        t_ang = Mathf.Atan2(y_world - y_r, x_world - x_r) - theta_r;
+        t_dis = Math.Sqrt(Math.Pow(x_world - x_r, 2) + Math.Pow(y_world - y_r, 2));
+        t_ang = Math.Atan2(y_world - y_r, x_world - x_r) - theta_r;
         t_ang = ClampRad(t_ang);
 
-        abs_ang = Mathf.Abs(t_ang);
+        abs_ang = Math.Abs(t_ang);
     }
 
-    void StatesUpdate(ref Vector<float> currentState, float dis, float ang)
+    void StatesUpdate(ref Vector<double> currentState, double dis, double ang)
     {
-        float theta_r = ClampRad(ang + currentState[2]);
+        double theta_r = ClampRad(ang + currentState[2]);
         // Calculate the movement
-        float dx = dis * Mathf.Cos(theta_r);
-        float dy = dis * Mathf.Sin(theta_r);
-        currentState.SetSubVector(0, 3, Vector<float>.Build.DenseOfArray(new float[] { currentState[0] + dx, currentState[1] + dy, theta_r }));
+        double dx = dis * Math.Cos(theta_r);
+        double dy = dis * Math.Sin(theta_r);
+        currentState.SetSubVector(0, 3, Vector<double>.Build.DenseOfArray(new double[] { currentState[0] + dx, currentState[1] + dy, theta_r }));
     }
 
-    Vector<float> ObervationEstimate(Vector<float> X_est, Vector<float> X_lm_est)
+    Dictionary<int, Vector<double>> ObserveLandmarks(Vector<double> X_true, double rangeNoiseFactor, double bearingNoiseFactor)
     {
-        CalculateMovement(out float r, out float b, X_est, X_lm_est);
-        return Vector<float>.Build.DenseOfArray(new float[] { r, b });
-    }
-
-    Dictionary<int, Vector<float>> ObserveLandmarks(Vector<float> X_true, float rangeNoiseFactor, float bearingNoiseFactor)
-    {
-        Dictionary<int, Vector<float>> observations = new Dictionary<int, Vector<float>>();
+        Dictionary<int, Vector<double>> observations = new Dictionary<int, Vector<double>>();
 
         foreach (int idx in landmarkDictionary.Keys)
         {
-            CalculateMovement(out float r, out float b, X_true, landmarkDictionary[idx]);
+            CalculateMovement(out double r, out double b, X_true, landmarkDictionary[idx]);
 
-            float bearing_noise = Mathf.Deg2Rad * bearingNoiseFactor * (float)normal.Sample(),
-              range_noise = rangeNoiseFactor * (float)normal.Sample();
+            double bearing_noise = Deg2Rad * bearingNoiseFactor * normal.Sample(),
+              range_noise = rangeNoiseFactor * normal.Sample();
 
             r += range_noise;
             b = ClampRad(b + bearing_noise);
 
-            if (Mathf.Abs(b) <= bearing && r >= rangeMin && r <= rangeMax)
+            if (Math.Abs(b) <= bearing && r >= rangeMin && r <= rangeMax)
             {
-                observations.Add(idx, Vector<float>.Build.DenseOfArray(new float[] { r, b }));
+                observations.Add(idx, Vector<double>.Build.DenseOfArray(new double[] { r, b }));
             }
         }
 
         return observations;
     }
 
-    void CalculateMovement(out float d, out float a, Vector<float> currentState, Vector<float> targetPos)
+    void CalculateMovement(out double d, out double a, Vector<double> currentState, Vector<double> targetPos)
     {
-        d = (float)(currentState.SubVector(0, 2) - targetPos).L2Norm();
-        a = ClampRad(Mathf.Atan2(targetPos[1] - currentState[1], targetPos[0] - currentState[0]) - currentState[2]);
+        d = (double)(currentState.SubVector(0, 2) - targetPos).L2Norm();
+        a = ClampRad(Math.Atan2(targetPos[1] - currentState[1], targetPos[0] - currentState[0]) - currentState[2]);
     }
 
-    List<int[]> GetIndexPairs(int length)
+    void GetPoseListAndPairs(List<List<int>> cycles, ref List<int> poseList, ref List<int[]> indexPairList, ref List<int[]> landmarkPairList)
     {
-        List<int[]> pairList = new List<int[]>();
+        //The latest pose
+        int endPoint = cycles[0][0];
 
-        for (int i = 0; i < length; i++)
-            for (int j = i + 1; j < length; j++)
-                pairList.Add(new int[2] { i, j });
+        foreach (List<int> cycle in cycles)
+        {
+            for (int i = 1; i < cycle.Count; i++)
+            {
+                if (!poseList.Contains(cycle[i]))
+                {
+                    poseList.Add(cycle[i]);
+                }
+                    
+            }
+        }
+        poseList.Add(endPoint);
 
-        //for (int i = 0; i < length-1; i++)
-        //    pairList.Add(new int[2] { i, length - 1 });
 
-        return pairList;
+        foreach (List<int> cycle in cycles)
+        {
+            for (int i = 0; i < cycle.Count - 1; i++)
+            {
+                int[] lmPair = new int[2] { cycle[i], cycle[i + 1] };
+                int[] idxPair = new int[2] { poseList.IndexOf(cycle[i]), poseList.IndexOf(cycle[i + 1]) };
+
+                graphVisualizer.VisualizeConstraints(lmPair);
+
+                if (!landmarkPairList.Contains(lmPair))
+                    landmarkPairList.Add(lmPair);
+
+                if (!indexPairList.Contains(idxPair))
+                    indexPairList.Add(idxPair);
+            }
+
+            int[] lastLmPair = new int[2] { cycle[0], cycle[cycle.Count - 1]};
+            int[] lastIdxPair = new int[2] { poseList.IndexOf(cycle[0]), poseList.IndexOf(cycle[cycle.Count - 1])};
+
+
+            if (!landmarkPairList.Contains(lastLmPair))
+                landmarkPairList.Add(lastLmPair);
+
+            if (!indexPairList.Contains(lastIdxPair))
+                indexPairList.Add(lastIdxPair);
+        }
     }
+
 
     #region Utility
-
-    float ClampRad(float ang)
+    double ClampRad(double ang)
     {
-        float new_ang = ang;
+        double new_ang = ang;
 
-        if (ang > Mathf.PI)
-            new_ang -= 2 * Mathf.PI;
-        else if (ang < -Mathf.PI)
-            new_ang += 2 * Mathf.PI;
+        if (ang > Math.PI)
+            new_ang -= 2 * Math.PI;
+        else if (ang < -Math.PI)
+            new_ang += 2 * Math.PI;
 
         return new_ang;
     }
 
 
 
-    Vector<float> QueueToVector(Queue<Vector<float>> robotTrace_predict)
+    Vector<double> ListToVector(List<Vector<double>> robotTraceWithConstraints)
     {
-        Vector<float> robStateVector = Vector<float>.Build.DenseOfArray(new float[robotTrace_predict.Count * 3]);
+        Vector<double> robStateVector = Vector<double>.Build.DenseOfArray(new double[robotTraceWithConstraints.Count * 2]);
 
-        int count = 0;
-
-        while (robotTrace_predict.Count > 0)
+        for (int i = 0; i < robotTraceWithConstraints.Count; i++)
         {
-            Vector<float> state = robotTrace_predict.Dequeue();
-            robStateVector.SetSubVector(3 * count, 3, state);
-            count++;
+            robStateVector.SetSubVector(2 * i, 2, robotTraceWithConstraints[i]);
         }
 
         return robStateVector;
     }
 
-    Queue<Vector<float>> VectorToQueue(Vector<float> robStateVector)
+    List<Vector<double>> VectorToList(Vector<double> robStateVector)
     {
-        Queue<Vector<float>> robotTrace_actual = new Queue<Vector<float>>();
+        List<Vector<double>> robotTrace_actual = new List<Vector<double>>();
 
-        for (int i = 0; i < robStateVector.Count / 3; i++)
+        for (int i = 0; i < robStateVector.Count / 2; i++)
         {
-            robotTrace_actual.Enqueue(robStateVector.SubVector(3 * i, 3));
+            robotTrace_actual.Add(robStateVector.SubVector(2 * i, 2));
         }
 
         return robotTrace_actual;
     }
-
 
     #endregion
 }

@@ -2,6 +2,8 @@
 using UnityEngine.UI;
 using MathNet.Numerics.LinearAlgebra;
 using System.Collections.Generic;
+using System.Collections;
+using System;
 
 [RequireComponent(typeof(GraphSLAM))]
 public class GraphVisualizer : MonoBehaviour
@@ -21,18 +23,27 @@ public class GraphVisualizer : MonoBehaviour
     [SerializeField]
     Shader lineShader;
 
+    [SerializeField]
+    GameObject settingsPanel;
+
+    [SerializeField]
+    Button settingsButton;
+
     GraphSLAM graphSLAM;
 
     RectTransform robotPredictRectTransform, robotActualRectTransform;
 
     List<RectTransform> landmarkMeanRectTransformList = new List<RectTransform>();
-    Queue<RectTransform> robotRectTrac_predict = new Queue<RectTransform>();
-    Queue<RectTransform> robotRectTrac_actual = new Queue<RectTransform>();
+    List<RectTransform> robotRectTrac_predict = new List<RectTransform>();
+    List<RectTransform> robotRectTrac_actual = new List<RectTransform>();
 
     bool allowInput = true;
     float marginPixelSize, worldLimitX, worldLimitY, UIScalar = 10f;
 
     List<RectTransform> landmarkRectTransformList = new List<RectTransform>();
+
+    const double Deg2Rad = Math.PI / 180;
+    const double Rad2Deg = 180 / Math.PI;
 
     void Awake()
     {
@@ -41,6 +52,8 @@ public class GraphVisualizer : MonoBehaviour
         worldLimitX = ScreenXToWorld(Screen.width - marginPixelSize);
         worldLimitY = ScreenYToWorld(Screen.height - marginPixelSize);
         graphSLAM = GetComponent<GraphSLAM>();
+        settingsButton.onClick.AddListener(delegate { ToggleSettings(); });
+        //optimizeButton.onClick.AddListener(delegate { graphSLAM.Optimize(); });
     }
 
     // Start is called before the first frame update
@@ -57,14 +70,14 @@ public class GraphVisualizer : MonoBehaviour
             Vector2 mousePosition = Input.mousePosition;
 
             //Debug.Log("MousePosition" + mousePosition);
-            if (IsInputValid(mousePosition))
+            if (!RectTransformUtility.RectangleContainsScreenPoint(settingsButton.GetComponent<RectTransform>(), mousePosition, Camera.main))
                 graphSLAM.SetTargetWorldPoints(ScreenXToWorld(mousePosition.x), ScreenYToWorld(mousePosition.y));
         }
         else if (Input.touchCount >= 1 && allowInput)
         {
             Vector2 touchPosition = Input.touches[0].position;
 
-            if (IsInputValid(touchPosition))
+            if (!RectTransformUtility.RectangleContainsScreenPoint(settingsButton.GetComponent<RectTransform>(), touchPosition, Camera.main))
                 graphSLAM.SetTargetWorldPoints(ScreenXToWorld(touchPosition.x), ScreenYToWorld(touchPosition.y));
         }
     }
@@ -72,11 +85,11 @@ public class GraphVisualizer : MonoBehaviour
     public void VisualizerRobotRegistration(float x, float y, float theta)
     {
         //UI initialization
-        PrefabInitialization(out robotActualRectTransform, prefab[0], transform, new Vector2(x, y), true, Quaternion.Euler(0, 0, theta), UIScalar, new Color(0, 0, 0, 0.7f), "RobActual");
-        robotRectTrac_actual.Enqueue(robotActualRectTransform);
+        PrefabInitialization(out robotActualRectTransform, prefab[0], transform, new Vector2(x, y), true, Quaternion.Euler(0, 0, theta), UIScalar, new Color(0, 0, 0, 0.25f), "RobActual");
+        robotRectTrac_actual.Add(robotActualRectTransform);
 
-        PrefabInitialization(out robotPredictRectTransform, prefab[0], transform, new Vector2(x, y), true, Quaternion.Euler(0, 0, theta), UIScalar, Color.black, "RobPredict");
-        robotRectTrac_predict.Enqueue(robotPredictRectTransform);
+        PrefabInitialization(out robotPredictRectTransform, prefab[0], transform, new Vector2(x, y), true, Quaternion.Euler(0, 0, theta), UIScalar, new Color(0, 0, 0, 0.5f), "RobPredict");
+        robotRectTrac_predict.Add(robotPredictRectTransform);
     }
 
     //Instaniate new landmark ellipses
@@ -87,63 +100,68 @@ public class GraphVisualizer : MonoBehaviour
         landmarkMeanRectTransformList.Add(landmarkMean);
     }
 
-    public void Visualize(Vector<float> X_predict, Vector<float> X_actual, bool isRecord = false)
+    public void Visualize(Vector<double> X_predict, Vector<double> X_actual, bool isRecord = false)
     {
         if (isRecord)
         {
-            //Avoid Overflow
-            if (robotRectTrac_predict.Count >= graphSLAM.historyLength)
-            {
-                //Dequeue
-                Destroy(robotRectTrac_predict.Dequeue().gameObject);
-                Destroy(robotRectTrac_actual.Dequeue().gameObject);
-            }
+            ////Avoid Overflow
+            //if (robotRectTrac_predict.Count >= graphSLAM.historyLength)
+            //{
+            //    //Dequeue
+            //    Destroy(robotRectTrac_predict.Last().gameObject);
+            //    Destroy(robotRectTrac_actual.Last().gameObject);
+            //}
 
-            PrefabInitialization(out RectTransform latest_predict, prefab[0], transform, new Vector2(X_predict[0], X_predict[1]), true, Quaternion.Euler(0, 0, Mathf.Rad2Deg * X_predict[2]), UIScalar, new Color(0, 0, 0, 0.7f), "RobPredict");
-            robotRectTrac_predict.Enqueue(latest_predict);
+            PrefabInitialization(out RectTransform latest_predict, prefab[0], transform, new Vector2((float)X_predict[0], (float)X_predict[1]), true, Quaternion.Euler(0, 0, (float)(Rad2Deg * X_predict[2])), UIScalar, new Color(0, 0, 0, 0.7f), "RobPredict");
+            robotRectTrac_predict.Add(latest_predict);
+            robotPredictRectTransform.localScale = new Vector2(1 / (3*UIScalar), 1 / (3*UIScalar));
             robotPredictRectTransform = latest_predict;
 
-            PrefabInitialization(out RectTransform latest_actual, prefab[0], transform, new Vector2(X_actual[0], X_actual[1]), true, Quaternion.Euler(0, 0, Mathf.Rad2Deg * X_actual[2]), UIScalar, new Color(0, 0, 0, 0.3f), "RobActual");
-            robotRectTrac_actual.Enqueue(latest_actual);
+            PrefabInitialization(out RectTransform latest_actual, prefab[0], transform, new Vector2((float)X_actual[0], (float)X_actual[1]), true, Quaternion.Euler(0, 0, (float)(Rad2Deg * X_actual[2])), UIScalar, new Color(0, 0, 0, 0.3f), "RobActual");
+            robotRectTrac_actual.Add(latest_actual);
+            robotActualRectTransform.localScale = new Vector2(1 / (3 * UIScalar), 1 / (3 * UIScalar));
             robotActualRectTransform = latest_actual;
         }
         else
         {
-            robotPredictRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg * X_predict[2]));
-            robotPredictRectTransform.localPosition = new Vector2(WorldXToScreen(X_predict[0]), WorldYToScreen(X_predict[1]));
+            robotPredictRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, (float)(Rad2Deg * X_predict[2])));
+            robotPredictRectTransform.localPosition = new Vector2(WorldXToScreen((float)X_predict[0]), WorldYToScreen((float)X_predict[1]));
 
-            robotActualRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg * X_actual[2]));
-            robotActualRectTransform.localPosition = new Vector2(WorldXToScreen(X_actual[0]), WorldYToScreen(X_actual[1]));
+            robotActualRectTransform.localRotation = Quaternion.Euler(new Vector3(0, 0, (float)(Rad2Deg * X_actual[2])));
+            robotActualRectTransform.localPosition = new Vector2(WorldXToScreen((float)X_actual[0]), WorldYToScreen((float)X_actual[1]));
         }
     }
 
-    public bool OptimizedVisualization(Queue<Vector<float>> robotTrace_predict)
+    public bool OptimizedVisualization(List<Vector<double>> robotTrace_predict)
     {
         if (robotRectTrac_predict.Count != robotTrace_predict.Count)
             return true;
 
-        Vector<float>[] traceArray = new Vector<float>[robotTrace_predict.Count];
-        RectTransform[] rectArray = new RectTransform[robotRectTrac_predict.Count];
-        robotTrace_predict.CopyTo(traceArray, 0);
-        robotRectTrac_predict.CopyTo(rectArray, 0);
-
-        for (int i = 0; i < traceArray.Length; i++)
+        for (int i = 0; i < robotTrace_predict.Count; i++)
         {
-            RectTransform rect = rectArray[i];
-            Vector<float> vec = traceArray[i];
+            RectTransform rect = robotRectTrac_predict[i];
+            Vector<double> vec = robotTrace_predict[i];
 
-            rect.localRotation = Quaternion.Euler(new Vector3(0, 0, Mathf.Rad2Deg * vec[2]));
-            rect.localPosition = new Vector2(WorldXToScreen(vec[0]), WorldYToScreen(vec[1]));
+            rect.localRotation = Quaternion.Euler(new Vector3(0, 0, (float)(Rad2Deg * vec[2])));
+            rect.localPosition = new Vector2(WorldXToScreen((float)vec[0]), WorldYToScreen((float)vec[1]));
 
-            if (i == traceArray.Length - 1)
+            if (i == robotTrace_predict.Count - 1)
             {
                 robotPredictRectTransform = rect;
             }
         }
 
-        Debug.Log("Visualize optimization finishes.");
+        //Debug.Log("Visualize optimization finishes.");
 
         return true;
+    }
+
+    public void VisualizeConstraints(int[] posePair)
+    {
+        //Debug.Log("Draw lines");
+
+        DrawLine(new Vector3(robotRectTrac_predict[posePair[0]].position.x, robotRectTrac_predict[posePair[0]].position.y), 
+            new Vector3(robotRectTrac_predict[posePair[1]].position.x, robotRectTrac_predict[posePair[1]].position.y), Color.black, 10*Time.deltaTime);
     }
 
     //Visualize the observed landmarks
@@ -200,16 +218,6 @@ public class GraphVisualizer : MonoBehaviour
         Destroy(myLine, duration);
     }
 
-    bool IsInputValid(Vector2 currentPos)
-    {
-        bool isValid = true;
-
-        if (currentPos.x < marginPixelSize || currentPos.x > Screen.width - marginPixelSize ||
-            currentPos.y < marginPixelSize || currentPos.y > Screen.height - marginPixelSize)
-            isValid = false;
-
-        return isValid;
-    }
 
     float WorldXToScreen(float world_x)
     {
@@ -229,5 +237,19 @@ public class GraphVisualizer : MonoBehaviour
     float ScreenYToWorld(float screen_y)
     {
         return (screen_y - marginPixelSize) / screenScalar;
+    }
+
+    void ToggleSettings()
+    {
+        allowInput = false;
+        settingsPanel.SetActive(!settingsPanel.activeSelf);
+
+        if (!settingsPanel.activeSelf)
+            StartCoroutine(WaitForSeconds(0.5f));
+    }
+    IEnumerator WaitForSeconds(float waitTime)
+    {
+        yield return new WaitForSeconds(waitTime);
+        allowInput = true;
     }
 }
