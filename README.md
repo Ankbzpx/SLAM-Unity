@@ -8,6 +8,6 @@ Tim Bailey (http://www-personal.acfr.usyd.edu.au/tbailey/software/). Math.NET (h
 ## EKF SLAM
 ![EFK](GIF/EKFSLAM.gif)
 ## Fast SLAM
-![EFK](GIF/FASTSLAM.gif)
+!FAST](GIF/FASTSLAM.gif)
 ## Graph SLAM
-![EFK](GIF/GRAPHSLAM.gif)
+![GRAPH](GIF/GRAPHSLAM.gif)
